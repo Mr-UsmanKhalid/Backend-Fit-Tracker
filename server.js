@@ -11,7 +11,7 @@ const progressRoutes = require("./routes/progressRoutes");
 const notificationRoutes = require("./routes/notificationRoutes");
 const reportRoutes = require("./routes/reportRoutes");
 const searchRoutes = require("./routes/searchRoutes");
-const userRoutes = require("./routes/userRoutes");
+const userRoutes = require("./routes/Userroutes");
 
 const connection = require("./config/db");
 
