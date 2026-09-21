@@ -8,15 +8,28 @@ const sendEmail = require("../utils/sendEmail");
 // ========================
 // Generate JWT
 // ========================
-const generateToken = (userId) => {
+const generateToken = (userId, expiresIn = "7d") => {
   return jwt.sign(
     { id: userId },
     process.env.JWT_SECRET,
     {
-      expiresIn: "7d",
+      expiresIn,
     }
   );
 };
+
+// ========================
+// Validation helpers (same rules as the frontend forms)
+// ========================
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+const USERNAME_REGEX = /^[a-zA-Z0-9_]{3,20}$/;
+
+const isStrongPassword = (password) =>
+  typeof password === "string" &&
+  password.length >= 8 &&
+  password.length <= 72 && // bcrypt only uses the first 72 bytes
+  /[A-Za-z]/.test(password) &&
+  /\d/.test(password);
 
 // ========================
 // Auth Me
@@ -61,7 +74,37 @@ const registerUser = async (req, res) => {
       });
     }
 
-    const existingUsername = await User.findOne({ username });
+    const cleanName = String(name).trim();
+    const cleanUsername = String(username).trim().toLowerCase();
+    const cleanEmail = String(email).trim().toLowerCase();
+
+    if (cleanName.length < 2 || cleanName.length > 50) {
+      return res.status(400).json({
+        message: "Name must be between 2 and 50 characters",
+      });
+    }
+
+    if (!USERNAME_REGEX.test(cleanUsername)) {
+      return res.status(400).json({
+        message:
+          "Username must be 3 to 20 characters: letters, numbers and underscores only",
+      });
+    }
+
+    if (cleanEmail.length > 254 || !EMAIL_REGEX.test(cleanEmail)) {
+      return res.status(400).json({
+        message: "Please enter a valid email address",
+      });
+    }
+
+    if (!isStrongPassword(password)) {
+      return res.status(400).json({
+        message:
+          "Password must be 8 to 72 characters and include a letter and a number",
+      });
+    }
+
+    const existingUsername = await User.findOne({ username: cleanUsername });
 
     if (existingUsername) {
       return res.status(400).json({
@@ -69,7 +112,7 @@ const registerUser = async (req, res) => {
       });
     }
 
-    const existingEmail = await User.findOne({ email });
+    const existingEmail = await User.findOne({ email: cleanEmail });
 
     if (existingEmail) {
       return res.status(400).json({
@@ -80,9 +123,9 @@ const registerUser = async (req, res) => {
     const hashedPassword = await bcrypt.hash(password, 10);
 
     const user = await User.create({
-      name,
-      username: username.toLowerCase(), 
-      email: email.toLowerCase(),
+      name: cleanName,
+      username: cleanUsername,
+      email: cleanEmail,
       password: hashedPassword,
       profilePicture: profilePicture || "",
     });
@@ -113,7 +156,7 @@ const registerUser = async (req, res) => {
 // ========================
 const loginUser = async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const { email, password, remember } = req.body;
 
     if (!email || !password) {
       return res.status(400).json({
@@ -121,7 +164,10 @@ const loginUser = async (req, res) => {
       });
     }
 
-    const user = await User.findOne({ email });
+    // Emails are stored lower-case, so "Bob@Example.com" must find "bob@example.com"
+    const user = await User.findOne({
+      email: String(email).trim().toLowerCase(),
+    });
 
     if (!user) {
       return res.status(401).json({
@@ -140,7 +186,8 @@ const loginUser = async (req, res) => {
       });
     }
 
-    const token = generateToken(user._id);
+    // Unchanged 7 days by default; a client that sends remember: true gets 30 days.
+    const token = generateToken(user._id, remember ? "30d" : "7d");
 
     res.status(200).json({
       message: "Login successful",
@@ -438,6 +485,70 @@ const deleteAccount = async (req, res) => {
 };
 
 // ========================
+// CHANGE PASSWORD (logged-in user)
+// ========================
+const changePassword = async (req, res) => {
+  try {
+    const { currentPassword, newPassword } = req.body;
+
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({
+        message: "Current password and new password are required",
+      });
+    }
+
+    if (newPassword.length < 8) {
+      return res.status(400).json({
+        message: "New password must be at least 8 characters",
+      });
+    }
+
+    if (currentPassword === newPassword) {
+      return res.status(400).json({
+        message: "New password must be different from the current password",
+      });
+    }
+
+    const user = await User.findById(req.user.id);
+
+    if (!user) {
+      return res.status(404).json({
+        message: "User not found",
+      });
+    }
+
+    const isPasswordMatch = await bcrypt.compare(
+      currentPassword,
+      user.password
+    );
+
+    // 400, not 401: a 401 here could make the frontend think the session expired
+    if (!isPasswordMatch) {
+      return res.status(400).json({
+        message: "Current password is incorrect",
+      });
+    }
+
+    user.password = await bcrypt.hash(newPassword, 10);
+
+    // Any pending "forgot password" link should stop working too
+    user.resetPasswordToken = null;
+    user.resetPasswordExpire = null;
+
+    await user.save();
+
+    res.status(200).json({
+      message: "Password changed successfully",
+    });
+  } catch (error) {
+    res.status(500).json({
+      message: "Server error",
+      error: error.message,
+    });
+  }
+};
+
+// ========================
 // EXPORTS
 // ========================
 module.exports = {
@@ -449,4 +560,5 @@ module.exports = {
   updateProfile,
   deleteAccount,
   getMe,
+  changePassword,
 };
